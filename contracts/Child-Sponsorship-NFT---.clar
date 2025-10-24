@@ -10,6 +10,7 @@
 (define-constant ERR_INVALID_CHILD_ID (err u105))
 (define-constant ERR_UPDATE_NOT_FOUND (err u106))
 (define-constant ERR_SUBSCRIPTION_ENDED (err u107))
+(define-constant ERR_TRANSFER_TO_SELF (err u108))
 
 (define-data-var next-child-id uint u1)
 (define-data-var monthly-sponsorship-amount uint u1000000)
@@ -169,6 +170,32 @@
     (asserts! (is-eq tx-sender (get sponsor sponsorship)) ERR_NOT_AUTHORIZED)
     (map-set sponsorships child-id (merge sponsorship { is-active: false }))
     (ok true)
+  )
+)
+
+(define-public (transfer-sponsorship (child-id uint) (new-sponsor principal))
+  (let (
+    (sponsorship (unwrap! (map-get? sponsorships child-id) ERR_NFT_NOT_FOUND))
+    (current-sponsor tx-sender)
+    (current-sponsor-children (default-to (list) (map-get? sponsor-children current-sponsor)))
+    (new-sponsor-children (default-to (list) (map-get? sponsor-children new-sponsor)))
+    (filtered-children (fold check-and-keep current-sponsor-children { target: child-id, result: (list) }))
+  )
+    (asserts! (is-eq current-sponsor (get sponsor sponsorship)) ERR_NOT_AUTHORIZED)
+    (asserts! (get is-active sponsorship) ERR_SUBSCRIPTION_ENDED)
+    (asserts! (not (is-eq current-sponsor new-sponsor)) ERR_TRANSFER_TO_SELF)
+    (try! (nft-transfer? child-sponsorship child-id current-sponsor new-sponsor))
+    (map-set sponsorships child-id (merge sponsorship { sponsor: new-sponsor }))
+    (map-set sponsor-children current-sponsor (get result filtered-children))
+    (map-set sponsor-children new-sponsor (unwrap! (as-max-len? (append new-sponsor-children child-id) u50) ERR_INVALID_CHILD_ID))
+    (ok true)
+  )
+)
+
+(define-private (check-and-keep (item uint) (acc { target: uint, result: (list 50 uint) }))
+  (if (is-eq item (get target acc))
+    acc
+    { target: (get target acc), result: (unwrap-panic (as-max-len? (append (get result acc) item) u50)) }
   )
 )
 
