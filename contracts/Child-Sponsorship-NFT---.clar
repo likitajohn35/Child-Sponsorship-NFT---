@@ -11,6 +11,8 @@
 (define-constant ERR_UPDATE_NOT_FOUND (err u106))
 (define-constant ERR_SUBSCRIPTION_ENDED (err u107))
 (define-constant ERR_TRANSFER_TO_SELF (err u108))
+(define-constant ERR_MILESTONE_ALREADY_CLAIMED (err u109))
+(define-constant ERR_MILESTONE_NOT_REACHED (err u110))
 
 (define-data-var next-child-id uint u1)
 (define-data-var monthly-sponsorship-amount uint u1000000)
@@ -56,6 +58,27 @@
 (define-map authorized-ngos principal bool)
 
 (define-map sponsor-children principal (list 50 uint))
+
+(define-map sponsor-milestones
+  { sponsor: principal, child-id: uint }
+  {
+    milestone-3-months: bool,
+    milestone-6-months: bool,
+    milestone-12-months: bool,
+    milestone-3-claimed: bool,
+    milestone-6-claimed: bool,
+    milestone-12-claimed: bool
+  }
+)
+
+(define-map sponsor-badge-counts
+  principal
+  {
+    bronze-badges: uint,
+    silver-badges: uint,
+    gold-badges: uint
+  }
+)
 
 (define-public (register-ngo (ngo principal))
   (begin
@@ -113,6 +136,14 @@
       (current-children (default-to (list) (map-get? sponsor-children tx-sender)))
     )
       (map-set sponsor-children tx-sender (unwrap! (as-max-len? (append current-children child-id) u50) ERR_INVALID_CHILD_ID))
+      (map-set sponsor-milestones { sponsor: tx-sender, child-id: child-id } {
+        milestone-3-months: false,
+        milestone-6-months: false,
+        milestone-12-months: false,
+        milestone-3-claimed: false,
+        milestone-6-claimed: false,
+        milestone-12-claimed: false
+      })
     )
     (ok true)
   )
@@ -257,5 +288,92 @@
 
 (define-read-only (get-total-children)
   (- (var-get next-child-id) u1)
+)
+
+(define-public (claim-milestone-reward (child-id uint) (milestone-type (string-ascii 10)))
+  (let (
+    (sponsorship (unwrap! (map-get? sponsorships child-id) ERR_NFT_NOT_FOUND))
+    (milestones (unwrap! (map-get? sponsor-milestones { sponsor: tx-sender, child-id: child-id }) ERR_NFT_NOT_FOUND))
+    (blocks-since-start (- stacks-block-height (get start-block sponsorship)))
+    (blocks-3-months u12960)
+    (blocks-6-months u25920)
+    (blocks-12-months u51840)
+    (badge-counts (default-to { bronze-badges: u0, silver-badges: u0, gold-badges: u0 } (map-get? sponsor-badge-counts tx-sender)))
+  )
+    (asserts! (is-eq tx-sender (get sponsor sponsorship)) ERR_NOT_AUTHORIZED)
+    (asserts! (get is-active sponsorship) ERR_SUBSCRIPTION_ENDED)
+    (if (is-eq milestone-type "3-months")
+      (begin
+        (asserts! (>= blocks-since-start blocks-3-months) ERR_MILESTONE_NOT_REACHED)
+        (asserts! (not (get milestone-3-claimed milestones)) ERR_MILESTONE_ALREADY_CLAIMED)
+        (map-set sponsor-milestones { sponsor: tx-sender, child-id: child-id }
+          (merge milestones { milestone-3-months: true, milestone-3-claimed: true })
+        )
+        (map-set sponsor-badge-counts tx-sender
+          (merge badge-counts { bronze-badges: (+ (get bronze-badges badge-counts) u1) })
+        )
+        (ok "bronze")
+      )
+      (if (is-eq milestone-type "6-months")
+        (begin
+          (asserts! (>= blocks-since-start blocks-6-months) ERR_MILESTONE_NOT_REACHED)
+          (asserts! (not (get milestone-6-claimed milestones)) ERR_MILESTONE_ALREADY_CLAIMED)
+          (map-set sponsor-milestones { sponsor: tx-sender, child-id: child-id }
+            (merge milestones { milestone-6-months: true, milestone-6-claimed: true })
+          )
+          (map-set sponsor-badge-counts tx-sender
+            (merge badge-counts { silver-badges: (+ (get silver-badges badge-counts) u1) })
+          )
+          (ok "silver")
+        )
+        (if (is-eq milestone-type "12-months")
+          (begin
+            (asserts! (>= blocks-since-start blocks-12-months) ERR_MILESTONE_NOT_REACHED)
+            (asserts! (not (get milestone-12-claimed milestones)) ERR_MILESTONE_ALREADY_CLAIMED)
+            (map-set sponsor-milestones { sponsor: tx-sender, child-id: child-id }
+              (merge milestones { milestone-12-months: true, milestone-12-claimed: true })
+            )
+            (map-set sponsor-badge-counts tx-sender
+              (merge badge-counts { gold-badges: (+ (get gold-badges badge-counts) u1) })
+            )
+            (ok "gold")
+          )
+          ERR_INVALID_CHILD_ID
+        )
+      )
+    )
+  )
+)
+
+(define-read-only (get-sponsor-milestones (sponsor principal) (child-id uint))
+  (map-get? sponsor-milestones { sponsor: sponsor, child-id: child-id })
+)
+
+(define-read-only (get-sponsor-badges (sponsor principal))
+  (default-to { bronze-badges: u0, silver-badges: u0, gold-badges: u0 } (map-get? sponsor-badge-counts sponsor))
+)
+
+(define-read-only (check-milestone-eligibility (child-id uint))
+  (match (map-get? sponsorships child-id)
+    sponsorship
+    (let (
+      (blocks-since-start (- stacks-block-height (get start-block sponsorship)))
+      (blocks-3-months u12960)
+      (blocks-6-months u25920)
+      (blocks-12-months u51840)
+      (milestones (default-to 
+        { milestone-3-months: false, milestone-6-months: false, milestone-12-months: false,
+          milestone-3-claimed: false, milestone-6-claimed: false, milestone-12-claimed: false }
+        (map-get? sponsor-milestones { sponsor: (get sponsor sponsorship), child-id: child-id })
+      ))
+    )
+      (some {
+        can-claim-3-months: (and (>= blocks-since-start blocks-3-months) (not (get milestone-3-claimed milestones))),
+        can-claim-6-months: (and (>= blocks-since-start blocks-6-months) (not (get milestone-6-claimed milestones))),
+        can-claim-12-months: (and (>= blocks-since-start blocks-12-months) (not (get milestone-12-claimed milestones)))
+      })
+    )
+    none
+  )
 )
 
